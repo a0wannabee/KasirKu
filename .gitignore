@@ -1,0 +1,128 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# Backend (Laravel)
+backend/vendor/
+backend/.env
+backend/.env.local
+backend/.env.*.local
+backend/node_modules/
+backend/npm-debug.log
+backend/yarn-error.log
+backend/storage/logs/*
+backend/!storage/logs/.gitkeep
+backend/bootstrap/cache/*
+backend/!bootstrap/cache/.gitkeep
+backend/.rnd
+backend/database/*.sqlite
+backend/database/*.sqlite-journal
+backend/public/storage
+backend/storage/debugbar/
+
+# Frontend (Flutter)
+frontend/build/
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.packages
+frontend/.pub-cache/
+frontend/.pub/
+frontend/coverage/
+frontend/*.iml
+frontend/.gradle
+frontend/local.properties
+frontend/GeneratedPluginRegistrant.java
+frontend/.idea/workspace.xml
+frontend/.idea/libraries
+frontend/.idea/misc.xml
+frontend/*.jks
+frontend/*.keystore
+frontend/*.lock
+frontend/pubspec.lock
+frontend/ios/.symlinks/
+frontend/ios/.generated/
+frontend/ios/Flutter/Flutter.framework
+frontend/ios/Flutter/Flutter.podspec
+frontend/ios/Flutter/Generated.xcconfig
+frontend/ios/Flutter/ephemeral/
+frontend/ios/Flutter/app.flx
+frontend/ios/Flutter/app.zip
+frontend/ios/Flutter/flutter_assets/
+frontend/ios/Flutter/flutter_export_environment.sh
+frontend/ios/ServiceDefinitions.json
+frontend/ios/Runner/GeneratedPluginRegistrant.*
+frontend/ios/Pods/
+frontend/android/app/debug/
+frontend/android/app/profile/
+frontend/android/app/release/
+frontend/android/.gradle/
+frontend/android/gradle.properties
+frontend/android/local.properties
+frontend/macos/Flutter/GeneratedPluginRegistrant.swift
+frontend/windows/flutter/generated_plugins.cmake
+frontend/windows/flutter/generated_plugins.vcxproj
+frontend/windows/flutter/generated_plugins.vcxproj.filters
+frontend/windows/flutter/flutter_windows.dll
+frontend/web/plugins.js
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+.npm
+.yarn
+
+# Logs
+*.log
+logs/
+*.log
+
+# Database
+*.sqlite
+*.sqlite3
+
+# Compiled files
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
