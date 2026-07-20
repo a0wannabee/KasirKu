@@ -1,0 +1,363 @@
+// ============================================================
+// PRISMA SCHEMA — Inventory & POS System
+// Database: PostgreSQL
+// ============================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// AUTH & RBAC
+// ------------------------------------------------------------
+
+enum Role {
+  OWNER
+  MANAGER
+  KASIR
+  GUDANG
+}
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  email         String   @unique
+  passwordHash  String   // bcrypt/argon2 hash — NEVER plain text
+  fullName      String
+  role          Role
+  isActive      Boolean  @default(true)
+  failedLoginCount Int   @default(0)
+  lockedUntil   DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  purchases     Purchase[]
+  sales         Sale[]
+  stockMutations StockMutation[]
+  auditLogs     AuditLog[]
+  refreshTokens RefreshToken[]
+
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// Generic audit log — every sensitive mutation is recorded here.
+// Records are append-only: never deleted or edited.
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String   // e.g. "PRODUCT_UPDATE", "SALE_VOID", "HPP_CHANGE"
+  entityType  String   // e.g. "Product", "Sale", "Purchase"
+  entityId    String
+  beforeData  Json?
+  afterData   Json?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ------------------------------------------------------------
+// MASTER DATA
+// ------------------------------------------------------------
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  products  Product[]
+  createdAt DateTime  @default(now())
+}
+
+model Supplier {
+  id          String     @id @default(uuid())
+  name        String
+  phone       String?
+  address     String?
+  email       String?
+  isActive    Boolean    @default(true)
+  purchases   Purchase[]
+  products    ProductSupplier[]
+  createdAt   DateTime   @default(now())
+}
+
+model Product {
+  id              String   @id @default(uuid())
+  sku             String   @unique // auto-generated, e.g. PRD-000123
+  name            String
+  categoryId      String
+  category        Category @relation(fields: [categoryId], references: [id])
+  barcode         String?  @unique
+
+  purchaseUnit    String   // satuan beli, e.g. "Karton"
+  saleUnit        String   // satuan jual, e.g. "Pcs"
+  contentPerPack  Int      @default(1) // isi per pack/karton -> konversi ke saleUnit
+
+  hpp             Decimal  @db.Decimal(14,2) @default(0) // weighted average cost, per saleUnit
+  sellPrice       Decimal  @db.Decimal(14,2)
+  minStock        Int      @default(0)
+  currentStock    Int      @default(0) // denormalized cache, source of truth = StockMutation sum
+
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  suppliers       ProductSupplier[]
+  purchaseItems   PurchaseItem[]
+  saleItems       SaleItem[]
+  stockMutations  StockMutation[]
+  hppHistory      HppHistory[]
+  stockAdjustments StockAdjustment[]
+
+  @@index([categoryId])
+  @@index([name])
+}
+
+// many-to-many: a product may be supplied by multiple suppliers
+model ProductSupplier {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  supplierId  String
+  supplier    Supplier @relation(fields: [supplierId], references: [id])
+  lastPrice   Decimal? @db.Decimal(14,2)
+
+  @@unique([productId, supplierId])
+}
+
+// Immutable log of every HPP change — required so HPP changes are never silent.
+model HppHistory {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  oldHpp      Decimal  @db.Decimal(14,2)
+  newHpp      Decimal  @db.Decimal(14,2)
+  reason      String   // "PURCHASE", "MANUAL_ADJUSTMENT", "CORRECTION"
+  referenceId String?  // e.g. purchaseId
+  changedById String?
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+}
+
+// ------------------------------------------------------------
+// PURCHASING (with OCR/AI ingestion)
+// ------------------------------------------------------------
+
+enum PurchaseStatus {
+  PENDING_OCR
+  NEEDS_VERIFICATION // some line items reference unknown products
+  VERIFIED
+  POSTED             // stock & HPP already applied
+  CANCELLED
+}
+
+model Purchase {
+  id              String         @id @default(uuid())
+  purchaseNumber  String         @unique // auto e.g. PO-20260711-0001
+  supplierId      String?
+  supplier        Supplier?      @relation(fields: [supplierId], references: [id])
+  status          PurchaseStatus @default(PENDING_OCR)
+
+  receiptImageUrl String         // archived photo of the nota
+  ocrRawText      String?        @db.Text
+  ocrConfidence   Float?
+
+  totalAmount     Decimal        @db.Decimal(14,2) @default(0)
+  createdById     String
+  createdBy       User           @relation(fields: [createdById], references: [id])
+  verifiedById    String?
+  verifiedAt      DateTime?
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  items           PurchaseItem[]
+
+  @@index([status])
+  @@index([supplierId])
+}
+
+model PurchaseItem {
+  id               String   @id @default(uuid())
+  purchaseId       String
+  purchase         Purchase @relation(fields: [purchaseId], references: [id])
+
+  // Nullable productId: OCR may extract a name that doesn't match any product yet.
+  productId        String?
+  product          Product? @relation(fields: [productId], references: [id])
+
+  rawName          String   // exact text extracted by OCR/AI
+  matchedConfidence Float?  // similarity score against master product (0-1)
+  quantity         Decimal  @db.Decimal(14,2)
+  unit             String
+  unitPrice        Decimal  @db.Decimal(14,2)
+  subtotal         Decimal  @db.Decimal(14,2)
+  needsVerification Boolean @default(false)
+
+  @@index([purchaseId])
+  @@index([productId])
+}
+
+// ------------------------------------------------------------
+// INVENTORY / STOCK
+// ------------------------------------------------------------
+
+enum StockMutationType {
+  PURCHASE_IN
+  SALE_OUT
+  RETURN_IN
+  ADJUSTMENT
+  TRANSFER // reserved for future multi-cabang
+}
+
+// Immutable ledger — the single source of truth for stock. Never deleted.
+model StockMutation {
+  id          String            @id @default(uuid())
+  productId   String
+  product     Product           @relation(fields: [productId], references: [id])
+  type        StockMutationType
+  quantity    Int               // positive = in, negative = out
+  balanceAfter Int              // running balance snapshot at time of mutation
+  referenceType String?         // "Purchase" | "Sale" | "StockAdjustment" | "SaleReturn"
+  referenceId String?
+  note        String?
+  userId      String?
+  user        User?             @relation(fields: [userId], references: [id])
+  createdAt   DateTime          @default(now())
+
+  @@index([productId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+enum AdjustmentReason {
+  DAMAGED
+  LOST
+  EXPIRED
+  STOCK_OPNAME
+  OTHER
+}
+
+model StockAdjustment {
+  id          String           @id @default(uuid())
+  productId   String
+  product     Product          @relation(fields: [productId], references: [id])
+  quantityDelta Int            // can be negative or positive
+  reason      AdjustmentReason
+  note        String?
+  approvedById String?
+  createdAt   DateTime         @default(now())
+
+  @@index([productId])
+}
+
+// ------------------------------------------------------------
+// SALES / POS
+// ------------------------------------------------------------
+
+enum PaymentMethod {
+  CASH
+  TRANSFER
+  QRIS
+  CARD
+}
+
+enum SaleStatus {
+  COMPLETED
+  VOID // never hard-deleted; voided with audit log + reason
+  RETURNED
+  PARTIALLY_RETURNED
+}
+
+model Sale {
+  id              String        @id @default(uuid())
+  invoiceNumber   String        @unique // auto e.g. INV-20260711-0001
+  cashierId       String
+  cashier         User          @relation(fields: [cashierId], references: [id])
+
+  subtotal        Decimal       @db.Decimal(14,2)
+  discountAmount  Decimal       @db.Decimal(14,2) @default(0)
+  taxAmount       Decimal       @db.Decimal(14,2) @default(0)
+  totalAmount     Decimal       @db.Decimal(14,2)
+  totalHpp        Decimal       @db.Decimal(14,2) // snapshot for real-time profit calc
+  paymentMethod   PaymentMethod
+  amountPaid      Decimal       @db.Decimal(14,2)
+  changeAmount    Decimal       @db.Decimal(14,2) @default(0)
+
+  status          SaleStatus    @default(COMPLETED)
+  voidReason      String?
+  voidedById      String?
+  voidedAt        DateTime?
+
+  createdAt       DateTime      @default(now())
+
+  items           SaleItem[]
+  returns         SaleReturn[]
+
+  @@index([cashierId])
+  @@index([createdAt])
+  @@index([status])
+}
+
+model SaleItem {
+  id          String   @id @default(uuid())
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id])
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(14,2) // price at time of sale
+  unitHpp     Decimal  @db.Decimal(14,2) // HPP at time of sale (weighted avg snapshot)
+  discount    Decimal  @db.Decimal(14,2) @default(0)
+  subtotal    Decimal  @db.Decimal(14,2)
+
+  @@index([saleId])
+  @@index([productId])
+}
+
+model SaleReturn {
+  id          String   @id @default(uuid())
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id])
+  productId   String
+  quantity    Int
+  reason      String
+  refundAmount Decimal @db.Decimal(14,2)
+  processedById String
+  createdAt   DateTime @default(now())
+
+  @@index([saleId])
+}
+
+// ------------------------------------------------------------
+// SYSTEM / OPS
+// ------------------------------------------------------------
+
+model BackupLog {
+  id          String   @id @default(uuid())
+  fileName    String
+  sizeBytes   BigInt
+  status      String   // SUCCESS | FAILED
+  startedAt   DateTime
+  finishedAt  DateTime?
+  errorMessage String?
+}

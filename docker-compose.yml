@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  # ── 1. PostgreSQL Database ───────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: pos_postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pos_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SuperSecretDBPass123!}
+      POSTGRES_DB: ${POSTGRES_DB:-pos_inventory}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pos_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pos_user} -d ${POSTGRES_DB:-pos_inventory}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pos_network
+
+  # ── 2. Backend API Service (Node.js + Express + Prisma) ──────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pos_backend_api
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pos_user}:${POSTGRES_PASSWORD:-SuperSecretDBPass123!}@db:5432/${POSTGRES_DB:-pos_inventory}?schema=public
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-b3a985d26f743ac91c10972b9a71df52b047545e8a719c8f6cf0184b2c15cf73}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-7df864ea53c1bcde57d812ef90ab2c41fa3c48e7da2bc678a1bcdeef12ab8fef}
+      JWT_ACCESS_EXPIRES: 15m
+      JWT_REFRESH_EXPIRES: 7d
+      SEED_OWNER_PASSWORD: ${SEED_OWNER_PASSWORD:-ChangeMe123!}
+      MAX_LOGIN_ATTEMPTS: 5
+      LOGIN_LOCKOUT_MINUTES: 15
+      UPLOAD_DIR: ./storage/receipts
+      MAX_UPLOAD_MB: 8
+      OCR_PROVIDER: anthropic
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-replace_me}
+      BACKUP_DIR: ./storage/backups
+      BACKUP_CRON: "0 2 * * *"
+      BACKUP_RETENTION_DAYS: 30
+    ports:
+      - "4000:4000"
+    volumes:
+      - backend_storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - pos_network
+
+  # ── 3. Frontend Service (Next.js 14 App Router + Tailwind) ───────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pos_frontend_app
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: http://localhost:4000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - pos_network
+
+volumes:
+  pos_db_data:
+  backend_storage:
+
+networks:
+  pos_network:
+    driver: bridge

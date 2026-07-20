@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Environment files (secrets)
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+
+# Prisma
+backend/prisma/migrations/
+
+# Storage (uploaded files, backups)
+storage/
+backend/storage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
