@@ -15,6 +15,8 @@ const dashboardRoutes = require('./routes/dashboard.routes');
 const usersRoutes = require('./routes/users.routes');
 const masterDataRoutes = require('./routes/masterData.routes');
 
+const { AppError } = require('./utils/AppError');
+
 const app = express();
 
 // Trust proxy so req.ip is correct behind nginx/Caddy (needed for rate limiting).
@@ -59,12 +61,23 @@ app.use('/api', masterDataRoutes); // /api/categories, /api/suppliers
 // --- 404 ---
 app.use((req, res) => res.status(404).json({ error: 'Endpoint tidak ditemukan.' }));
 
-// --- Central error handler: never leak stack traces / internals to client ---
+// --- Central error handler ---
+// AppError instances are safe to expose to the client because they are
+// deliberately thrown by application code with a curated message.
+// All other errors (DB failures, third-party API errors, etc.) are hidden
+// behind a generic message in production to avoid leaking internals.
 app.use((err, req, res, next) => {
   console.error(err);
+  if (err instanceof AppError) {
+    const body = { error: err.message };
+    if (err.code) body.code = err.code;
+    return res.status(err.status).json(body);
+  }
   const status = err.status || 500;
   res.status(status).json({
-    error: process.env.NODE_ENV === 'production' ? 'Terjadi kesalahan pada server.' : err.message,
+    error: process.env.NODE_ENV === 'production'
+      ? 'Terjadi kesalahan pada server. Silakan coba lagi atau hubungi administrator.'
+      : err.message,
   });
 });
 

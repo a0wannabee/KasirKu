@@ -96,6 +96,101 @@ router.post('/', authorize('OWNER', 'GUDANG'), productValidation, validate, asyn
   }
 });
 
+// POST /api/products/bulk — bulk create products from OCR items
+router.post('/bulk', authorize('OWNER', 'GUDANG'), async (req, res, next) => {
+  try {
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items harus berupa array.' });
+    }
+
+    const createdProducts = [];
+
+    await prisma.$transaction(async (tx) => {
+      // Find a default category fallback
+      const firstCategory = await tx.category.findFirst({ orderBy: { name: 'asc' } });
+      const defaultCategoryId = firstCategory ? firstCategory.id : null;
+
+      for (const item of items) {
+        if (!item.name || !item.name.trim()) {
+          throw new Error('Nama produk wajib diisi.');
+        }
+
+        let categoryId = item.categoryId || defaultCategoryId;
+
+        // If categoryName is provided, find or create it
+        if (item.categoryName && item.categoryName.trim()) {
+          const catName = item.categoryName.trim();
+          const existingCat = await tx.category.findFirst({
+            where: { name: { equals: catName, mode: 'insensitive' } }
+          });
+          if (existingCat) {
+            categoryId = existingCat.id;
+          } else {
+            const newCat = await tx.category.create({ data: { name: catName } });
+            categoryId = newCat.id;
+          }
+        }
+
+        if (!categoryId) {
+          throw new Error('Kategori wajib dipilih.');
+        }
+
+        const sku = await generateSku();
+        const product = await tx.product.create({
+          data: {
+            sku,
+            name: item.name.trim(),
+            categoryId,
+            barcode: item.barcode || null,
+            purchaseUnit: item.purchaseUnit || 'Karton',
+            saleUnit: item.saleUnit || 'Pcs',
+            contentPerPack: Number(item.contentPerPack) || 1,
+            hpp: Number(item.hpp) || 0,
+            sellPrice: Number(item.sellPrice) || 0,
+            minStock: Number(item.minStock) || 0,
+          }
+        });
+
+        // If linking to a purchase item, update it
+        if (item.purchaseItemId) {
+          await tx.purchaseItem.update({
+            where: { id: item.purchaseItemId },
+            data: {
+              productId: product.id,
+              needsVerification: false,
+              matchedConfidence: 1.0,
+            }
+          });
+        }
+
+        createdProducts.push(product);
+      }
+    });
+
+    await writeAuditLog({ req, action: 'PRODUCT_BULK_CREATE', entityType: 'Product', entityId: 'BULK', after: { count: createdProducts.length } });
+
+    // Recalculate purchase totals/statuses for affected purchases
+    const purchaseIds = [...new Set(items.map(it => it.purchaseId).filter(Boolean))];
+    for (const pId of purchaseIds) {
+      const allItems = await prisma.purchaseItem.findMany({ where: { purchaseId: pId } });
+      const totalAmount = allItems.reduce((sum, it) => sum + Number(it.subtotal), 0);
+      const anyUnmatched = allItems.some((i) => i.needsVerification || !i.productId);
+      await prisma.purchase.update({
+        where: { id: pId },
+        data: {
+          totalAmount,
+          status: allItems.length === 0 ? 'VERIFIED' : (anyUnmatched ? 'NEEDS_VERIFICATION' : 'VERIFIED'),
+        }
+      });
+    }
+
+    res.status(201).json({ success: true, count: createdProducts.length });
+  } catch (err) {
+    res.status(422).json({ error: err.message });
+  }
+});
+
 // PUT /api/products/:id — OWNER only for full edits (price, min stock, etc.)
 router.put('/:id', authorize('OWNER'), productValidation, validate, async (req, res, next) => {
   try {
